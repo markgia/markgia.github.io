@@ -1,0 +1,821 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <title>Code 1 example</title>
+    <meta charset="utf-8" />
+    <script src="https://cdn.rawgit.com/google/code-prettify/master/loader/run_prettify.js"></script>
+</head>
+<body>
+    <h1>Code 1 example - Contest entry page - for accepting contest entries</h1>
+    <pre class="prettyprint">
+Imports System.Data.SqlClient
+Imports System.Data
+Partial Class pages_entries_ASAEntryCreateEdit
+    Inherits System.Web.UI.Page
+    Dim AccountType As Integer
+    Protected Sub Page_Load(sender As Object, e As System.EventArgs) Handles Me.Load
+        Page.Form.Attributes.Add("enctype", "multipart/form-data")
+        '6/17/14 contest closed
+        'pnlClosed.Visible = True
+        'pnlEntry.Visible = False
+        'Exit Sub
+        Dim UsersDT, UsersDT2 As Users.ASA_UsersDataTable
+        Dim UsersTA As New UsersTableAdapters.ASA_UsersTableAdapter
+        UsersDT = UsersTA.GetUserByUserID(Session("UserID"))
+        If UsersDT.Count > 0 Then
+            AccountType = UsersDT(0).UserAccountType
+        End If
+        If Not IsPostBack Then
+            'cookie stuff for showing entry requirements
+            'test for cookie
+            If Not (Request.Cookies("ASA2015_EntryReqs") Is Nothing) Then
+                If (Request.Cookies("ASA2015_EntryReqs").Value = "HideReqs") Then
+                    ModalPopupExtender1.Enabled = False
+                    pnlModal.Visible = False
+                End If
+                'Response.Cookies.Remove("ASA2015_EntryReqs")
+                'Request.Cookies("ASA2015_EntryReqs").Expires = DateTime.Now.AddDays(-10)
+                'Request.Cookies("ASA2015_EntryReqs").Value = Nothing
+                'Response.SetCookie(Request.Cookies("ASA2015_EntryReqs"))
+            End If
+            If Request.QueryString("EntryID") IsNot Nothing Then
+                Dim EntriesDT As Entries.ASA_EntriesDataTable
+                Dim EntriesTA As New EntriesTableAdapters.ASA_EntriesTableAdapter
+                EntriesDT = EntriesTA.GetEntryByEntryID(Request.QueryString("EntryID"))
+                If EntriesDT.Count > 0 Then
+                    SetCategories()
+                    Session("EntryID") = Request.QueryString("EntryID")
+                    CheckEntryStatus(EntriesDT(0).EntryID)
+                Else
+                    'Entry not found; display error
+                    pnl1New.Visible = False
+                    pnl2UploadPhoto.Visible = False
+                    pnl3Releases.Visible = False
+                    pnl35ReleaseOrPayment.Visible = False
+                    pnl4UploadRelease.Visible = False
+                    pnlPhotoReqs.Visible = False
+                    pnl6Continue.Visible = True
+                End If
+            Else
+                pnlSelectCategory.Visible = False
+                If AccountType = 2 Then
+                    'Region account.  Show SelectStylist panel
+                    UsersDT2 = UsersTA.GetUsersByParentID(Session("UserID"))
+                    If UsersDT2.Count > 0 Then
+                        pnl0SelectStylist.Visible = True
+                        imgStep.Visible = False
+                        lblStepWord.Visible = False
+                        SetStylists()
+                        ddlStylist.SelectedValue = "-- Select a Stylist --"
+                        lblStep.Text = "Select Stylist before Proceeding"
+                        Session("EntryID") = Nothing
+                        pnlPhotoReqs.Visible = False
+                        ModalPopupExtender1.Show()
+                    Else
+                        'no stylists associated w/ this user.
+                        Response.Redirect("~/Main.aspx")
+                    End If
+                ElseIf AccountType = 1 Then
+                    SetCategories()
+                    Session("EntryStatus") = Nothing = "" 'reset entry status for a brand new entry
+                    Session("EntryID") = Nothing
+                    'DISABLED 6/17:
+                    pnl1New.Visible = True
+                    lblStep.Text = "1. Select Entry Type"
+                    pnlPhotoReqs.Visible = False
+                    ModalPopupExtender1.Show()
+                    Session("UserIDForEntry") = Session("UserID")
+                End If
+            End If
+        Else
+            'cookie stuff for showing entry requirements
+            'test for cookie
+            If chkShowReqs.Checked = True Then
+                'if the cookie doesn't already exist, create it
+                If (Request.Cookies("ASA2015_EntryReqs") Is Nothing) Then
+                    'place cookie
+                    Dim aCookie As New HttpCookie("ASA2015_EntryReqs")
+                    aCookie.Value = "HideReqs"
+                    aCookie.Expires = DateTime.Now.AddDays(7)
+                    Response.Cookies.Add(aCookie)
+                End If
+        End If
+        End If
+    End Sub
+    Protected Sub SetCategories()
+        Dim CategoriesDT As Entries.ASA_CategoriesDataTable
+        Dim CategoriesTA As New EntriesTableAdapters.ASA_CategoriesTableAdapter
+        CategoriesDT = CategoriesTA.GetActiveCategories
+        If CategoriesDT.Count > 0 Then
+            ddlCategory.DataSource = CategoriesDT
+            ddlCategory.DataTextField = "Category"
+            ddlCategory.DataValueField = "CategoryID"
+            ddlCategory.DataBind()
+            ddlCategory.Items.Insert(0, New ListItem("-- Select Category --", "-- Select Category --"))
+            ddlCategory.SelectedIndex = 0
+        End If
+    End Sub
+    Protected Sub SetStylists()
+        Dim UsersDT As Users.ASA_UsersDataTable
+        Dim UsersTA As New UsersTableAdapters.ASA_UsersTableAdapter
+        UsersDT = UsersTA.GetUsersByParentID(Session("UserID"))
+        If UsersDT.Count > 0 Then
+            UsersDT.Columns.Add("FullName", System.Type.GetType("System.String"), "FName + ' ' +  LName")
+            ddlStylist.DataSource = UsersDT
+            ddlStylist.DataTextField = "FullName"
+            ddlStylist.DataValueField = "UserID"
+            ddlStylist.DataBind()
+            ddlStylist.Items.Insert(0, New ListItem("-- Select Stylist --", "-- Select Stylist --"))
+        End If
+    End Sub
+    Protected Sub ddlStylist_SelectedIndexChanged(sender As Object, e As System.EventArgs) Handles ddlStylist.SelectedIndexChanged
+        If Not (Session("EntryID") Is Nothing Or Session("EntryID") = "") Then
+            'an update of a user for existing entry
+            Dim EntriesDT As Entries.ASA_EntriesDataTable
+            Dim EntriesTA As New EntriesTableAdapters.ASA_EntriesTableAdapter
+            EntriesDT = EntriesTA.GetEntryByEntryID(Session("EntryID"))
+            EntriesDT(0).UserID = ddlStylist.SelectedValue
+            EntriesTA.Update(EntriesDT)
+            'DISABLED 6/17
+            pnl1New.Visible = True
+            imgStep.Visible = True
+            SetCategories()
+            CheckEntryStatus(EntriesDT(0).EntryID)
+        Else
+            Session("UserIDForEntry") = ddlStylist.SelectedValue
+            'DISABLED 6/17
+            pnl1New.Visible = True
+            SetCategories()
+            lblStepWord.Visible = True
+            imgStep.Visible = True
+            lblStep.Text = "1. Choose a Category"
+        End If
+    End Sub
+    Protected Sub ddlCategory_SelectedIndexChanged(sender As Object, e As System.EventArgs) Handles ddlCategory.SelectedIndexChanged
+        If ddlCategory.SelectedIndex = "3" Then
+            'marketing
+            '1. see if they have paid entries
+            Dim UsersDT As Users.ASA_UsersDataTable
+            Dim UsersTA As New UsersTableAdapters.ASA_UsersTableAdapter
+            UsersDT = UsersTA.GetUserByUserID(Session("UserID"))
+            If UsersDT.Count > 0 Then
+                AccountType = UsersDT(0).UserAccountType
+            End If
+            Dim EntriesDT As Entries.ASA_EntriesDataTable
+            Dim EntriesTA As New EntriesTableAdapters.ASA_EntriesTableAdapter
+            Dim dv As DataView
+            Dim Success As Boolean
+            Select Case AccountType
+                Case 1
+                    EntriesDT = EntriesTA.GetEntriesByUserID(UsersDT(0).UserID)
+                    If EntriesDT.Count > 0 Then
+                        dv = New DataView(EntriesDT, "PaymentComplete = 'True' AND EntryTypeID >= 2", "EntryID", DataViewRowState.CurrentRows)
+                        If dv.Count > 0 Then
+                            'success
+                            Success = True
+                        Else
+                            'no paid items
+                            Success = False
+                        End If
+                    Else
+                        'no items
+                        Success = False
+                    End If
+                Case 2
+                    'Region ID. Must check if the stylist in question has 1 paid entry.
+                    EntriesDT = EntriesTA.GetEntriesByUserID(ddlStylist.SelectedValue)
+                    If EntriesDT.Count > 0 Then
+                        dv = New DataView(EntriesDT, "PaymentComplete = 'True' AND EntryTypeID >= 2", "EntryID", DataViewRowState.CurrentRows)
+                        If dv.Count > 0 Then
+                            'success
+                            Success = True
+                        Else
+                            'no paid items
+                            Success = False
+                        End If
+                    Else
+                        'no items
+                        Success = False
+                    End If
+            End Select
+            Select Case Success
+                Case True
+                Case False
+                    pnlMarketingError.Visible = True
+                    pnlSelectCategory.Visible = False
+                    Exit Sub
+            End Select
+        End If
+        SetEntryTypes(ddlCategory.SelectedValue)
+        pnlMarketingError.Visible = False
+        image1.Visible = False
+        pnlSelectCategory.Visible = True
+        image2.Visible = True
+    End Sub
+    Protected Sub ddlEntryType_SelectedIndexChanged(sender As Object, e As System.EventArgs) Handles ddlEntryType.SelectedIndexChanged
+        imbContinue1.Visible = True
+        image2.Visible = False
+    End Sub
+    Protected Sub imbContinue1_Click(sender As Object, e As System.Web.UI.ImageClickEventArgs) Handles imbContinue1.Click
+        Dim EntriesDT As Entries.ASA_EntriesDataTable
+        Dim EntriesTA As New EntriesTableAdapters.ASA_EntriesTableAdapter
+        If Not (Session("EntryID") Is Nothing Or Session("EntryID") = "") Then
+            'update of existing entry
+            EntriesDT = EntriesTA.GetEntryByEntryID(CInt(Session("EntryID")))
+            If EntriesDT.Count > 0 Then
+                EntriesDT(0).EntryTypeID = ddlEntryType.SelectedValue
+                EntriesDT(0).EntryStatus = 1
+                If pnl0SelectStylist.Visible = True Then
+                    EntriesDT(0).UserID = ddlStylist.SelectedValue
+                End If
+                EntriesTA.Update(EntriesDT)
+                CheckEntryStatus(Session("EntryID"))
+            End If
+        Else
+            'new entry
+            Dim NewEntry As Integer
+            'Add new entry to the db
+            'DISABLED 6/17/2013
+            NewEntry = EntriesTA.InsertEntry(Now, ddlEntryType.SelectedValue, CInt(Session("UserIDForEntry")))
+            'save entryID as session variable for back/forward & other tasks
+            Dim sqlConn As New SqlConnection(ConfigurationManager.ConnectionStrings("REDACTED").ToString)
+            Dim sqlCmd As New SqlCommand("select max(EntryID) From ASA_Entries GROUP BY UserID HAVING UserID = " & Session("UserIDForEntry"), sqlConn)
+            Dim theEntryID As String
+            Try
+                sqlConn.Open()
+                theEntryID = sqlCmd.ExecuteScalar
+                If theEntryID <> "" Then
+                    'user has entries
+                    Session("EntryID") = theEntryID
+                    'old way:
+                    'CheckEntryStatus(theEntryID)
+                    'new way: force redirect; it's better.
+                    Response.Redirect("ASAEntryCreateEdit.aspx?EntryID=" & theEntryID)
+                End If
+            Catch ex As Exception
+            End Try
+        End If
+    End Sub
+    Protected Sub imbContinue2_Click(sender As Object, e As System.Web.UI.ImageClickEventArgs) Handles imbContinue2.Click
+        Dim FileName1, FileName2 As String
+        'Check that photos are in correct format and size
+        'test for proper file format
+        Dim file1Ext As String = Right(FileUpload1.FileName.ToLower.ToString, 4)
+        If file1Ext <> "jpeg" Then
+            file1Ext = Right(file1Ext, 3)
+            If file1Ext <> "jpg" Then
+                lblPhoto1Err.Text = "File must be jpg only."
+                Exit Sub
+            ElseIf FileUpload1.FileContent.Length < 100000 Then
+                lblPhoto1Err.Text = "File size must be larger than 100KB."
+                Exit Sub
+            ElseIf FileUpload1.FileContent.Length > 4096000 Then
+                lblPhoto1Err.Text = "File size must be less than 4MB."
+                Exit Sub
+            End If
+        End If
+        If FileUpload2.Visible = True Then
+            Dim file2Ext As String = Right(FileUpload2.FileName.ToLower.ToString, 4)
+            If file2Ext <> "jpeg" Then
+                file2Ext = Right(file2Ext, 3)
+                If file2Ext <> "jpg" Then
+                    lblPhoto2Err.Text = "File must jpg only."
+                    Exit Sub
+                ElseIf FileUpload1.FileContent.Length < 100000 Then
+                    lblPhoto1Err.Text = "File size must be larger than 100KB."
+                    Exit Sub
+                ElseIf FileUpload2.FileContent.Length > 4096000 Then
+                    lblPhoto2Err.Text = "File size must be less than 4MB."
+                    Exit Sub
+                End If
+            End If
+        End If
+        Try
+            ' need to delete the old file - check see if there was an old file
+            FileName1 = CStr(Session("EntryID")) + "_Photo1.jpg"
+            If System.IO.File.Exists(Server.MapPath("~/submissions/photos/" + FileName1)) Then
+                Kill(Server.MapPath("~/submissions/photos/" + FileName1))
+            End If
+            'try & kill file 2, whether or not it should be there, in the case of a previous entry being updated
+            FileName2 = CStr(Session("EntryID")) + "_Photo2.jpg"
+            If System.IO.File.Exists(Server.MapPath("~/submissions/photos/" + FileName2)) Then
+                Kill(Server.MapPath("~/submissions/photos/" + FileName2))
+            End If
+            FileUpload1.SaveAs(Server.MapPath("~/submissions/photos/" + FileName1))
+        Catch ex As Exception
+            'Response.Write(ex.Message.ToString)
+            lblPhoto1Err.Text = "Unable to save the file: " & ex.Message.ToString
+            Exit Sub
+        End Try
+        If FileUpload2.Visible = True Then
+            Try
+                ' need to delete the old file - check see if there was an old file
+                FileUpload2.SaveAs(Server.MapPath("~/submissions/photos/" + FileName2))
+            Catch ex As Exception
+                'Response.Write(ex.Message.ToString)
+                lblPhoto2Err.Text = "Unable to save the file: " & ex.Message.ToString
+                Exit Sub
+            End Try
+        End If
+        'At this point the pics are saved.  update status & move on to next screen.
+        Dim EntriesDT As Entries.ASA_EntriesDataTable
+        Dim EntriesTA As New EntriesTableAdapters.ASA_EntriesTableAdapter
+        EntriesDT = EntriesTA.GetEntryByEntryID(Session("EntryID"))
+        If EntriesDT.Count > 0 Then
+            With EntriesDT(0)
+                .Photo1 = FileName1
+                If pnlPhoto2.Visible = True Then
+                    .Photo2 = FileName2
+                End If
+                If pnlAddlInfo.Visible = True Then
+                    'need to add CR's
+                    .AddlInfo = txtAddlInfo.Text.Replace(vbCr, " - ").Replace(vbLf, " - ").Replace("""", "")
+                End If
+                .EntryStatus = 2
+                EntriesTA.Update(EntriesDT)
+                CheckEntryStatus(.EntryID)
+            End With
+        End If
+    End Sub
+    Protected Sub imbContinue3_Click(sender As Object, e As System.Web.UI.ImageClickEventArgs) Handles imbContinue3.Click
+        'Need to create a separate page / window?? With everything good to go for the release
+        'Display instructions telling them it's 
+        Dim EntriesDT As Entries.ASA_EntriesDataTable
+        Dim EntriesTA As New EntriesTableAdapters.ASA_EntriesTableAdapter
+        EntriesDT = EntriesTA.GetEntryByEntryID(Session("EntryID"))
+        ' If EntriesDT.Count > 0 Then
+        EntriesDT(0).ModelName = tbModelName.Text
+        EntriesDT(0).StylistName = tbStylistName.Text
+        EntriesDT(0).PhotographerName = tbPhotographerName.Text
+        EntriesDT(0).EntryStatus = 3
+        EntriesTA.Update(EntriesDT)
+        'End If
+        'Dim TheVar As String = GenerateID(8, False)
+        'Session("SessionVar") = TheVar
+        'Response.Redirect("ASARelease.aspx?EntryID=" & Session("EntryID"))
+        'NEW for 2015: NEW panel on THIS page; "Stage 3 page" that gives options to Print Release, Upload Release, Make Payment, Start Over.
+        CheckEntryStatus(EntriesDT(0).EntryID)
+    End Sub
+    'Protected Sub lnkNoRelease_Click(sender As Object, e As System.EventArgs) Handles lnkNoRelease.Click
+    '    Dim EntriesDT As Entries.ASA_EntriesDataTable
+    '    Dim EntriesTA As New EntriesTableAdapters.ASA_EntriesTableAdapter
+    '    EntriesDT = EntriesTA.GetEntryByEntryID(Session("EntryID"))
+    '    ' If EntriesDT.Count > 0 Then
+    '    EntriesDT(0).ModelName = tbModelName.Text
+    '    EntriesDT(0).StylistName = tbStylistName.Text
+    '    EntriesDT(0).PhotographerName = tbPhotographerName.Text
+    '    'EntriesDT(0).EntryStatus = 3
+    '    EntriesTA.Update(EntriesDT)
+    '    'the following lines mimic what would be the case if EntryStatus = 3, without actually making it 3.
+    '    pnl1New.Visible = False
+    '    pnl2UploadPhoto.Visible = False
+    '    pnl3Releases.Visible = False
+    '    pnl5Thanks.Visible = False
+    '    pnl6Continue.Visible = False
+    '    pnlPhotoReqs.Visible = False
+    '    pnl4UploadRelease.Visible = True
+    '    If EntriesDT(0).ReleaseReceived = True Then
+    '        'can't show back button if release has been marked received. 
+    '        imbBack.Visible = False
+    '    Else
+    '        'if it hasn't been marked received they can re-print it, changing the names.
+    '        imbBack.Visible = True
+    '    End If
+    '    imgStep.ImageUrl = "~/resources/images/steps_4.gif"
+    '    lblStep.Text = "4. Payment"
+    '    If AccountType = 2 Then
+    '        pnl0SelectStylist.Visible = True
+    '        SetStylists()
+    '        ddlStylist.SelectedValue = EntriesDT(0).UserID
+    '        ddlStylist.Items(0).Enabled = False
+    '    Else
+    '        pnl0SelectStylist.Visible = False
+    '    End If
+    '    'this label reminds them to send in the release
+    '    lblReleaseReminder.Visible = True
+    'End Sub
+    Protected Sub CheckEntryStatus(ByVal theEntryID As Integer)
+        '2015 going to 7 Entry Statuses. Although they are no longer strictly sequential. 4 & 5 are alternatives at the same
+        'basic stage of Entry.
+        Dim EntriesDT As Entries.ASA_EntriesDataTable
+        Dim EntriesTA As New EntriesTableAdapters.ASA_EntriesTableAdapter
+        EntriesDT = EntriesTA.GetEntryByEntryID(theEntryID)
+        If EntriesDT.Count > 0 Then
+            Dim theEntryStatus As Integer = EntriesDT(0).EntryStatus
+            Session("EntryStatus") = theEntryStatus
+            Select Case theEntryStatus
+                Case 0 'case of someone backing from stage 2 (photos) back to stage 1
+                    pnl6Continue.Visible = False
+                    pnl5Thanks.Visible = False
+                    pnl4UploadRelease.Visible = False
+                    pnl3Releases.Visible = False
+                    pnl35ReleaseOrPayment.Visible = False
+                    pnl2UploadPhoto.Visible = False
+                    pnlPhotoReqs.Visible = False
+                    pnl1New.Visible = True
+                    imbBack.Visible = False
+                    imgStep.ImageUrl = "~/resources/images/steps_1.gif"
+                    lblStep.Text = "1. Select Entry Type"
+                    If AccountType = 2 Then
+                        pnl0SelectStylist.Visible = True
+                        SetStylists()
+                        ddlStylist.SelectedValue = EntriesDT(0).UserID
+                        ddlStylist.Enabled = True
+                        ddlStylist.ForeColor = Drawing.Color.Black
+                        'ddlStylist.Items(0).Enabled = False
+                    Else
+                        pnl0SelectStylist.Visible = False
+                    End If
+                    pnlSelectCategory.Visible = True
+                    With EntriesDT(0)
+                        SetCategory(.EntryTypeID)
+                    End With
+                    imbContinue1.Visible = True
+                    image1.Visible = False
+                    image2.Visible = False
+                Case 1 'New entry just created
+                    Dim EntryTypesDT As Entries.ASA_EntryTypesDataTable
+                    Dim EntryTypesTA As New EntriesTableAdapters.ASA_EntryTypesTableAdapter
+                    EntryTypesDT = EntryTypesTA.GetEntryTypeDetailsByEntryTypeId(EntriesDT(0).EntryTypeID)
+                    pnl6Continue.Visible = False
+                    pnl5Thanks.Visible = False
+                    pnl4UploadRelease.Visible = False
+                    pnl3Releases.Visible = False
+                    pnl35ReleaseOrPayment.Visible = False
+                    pnl1New.Visible = False
+                    pnl2UploadPhoto.Visible = True
+                    pnlPhotoReqs.Visible = True
+                    imbBack.Visible = True
+                    imgStep.ImageUrl = "~/resources/images/steps_2.gif"
+                    lblStep.Text = "2. Upload Photos"
+                    If AccountType = 2 Then
+                        pnl0SelectStylist.Visible = True
+                        SetStylists()
+                        ddlStylist.SelectedValue = EntriesDT(0).UserID
+                        ddlStylist.Enabled = False
+                        ddlStylist.ForeColor = Drawing.Color.Gray
+                    Else
+                        pnl0SelectStylist.Visible = False
+                    End If
+                    With EntriesDT(0)
+                        'SetCategory(.EntryTypeID)
+                        If .EntryTypeID > 10 Then
+                            lblEntryCategory.Text = "Artistic"
+                        ElseIf .EntryTypeID < 2 Then
+                            lblEntryCategory.Text = "Marketing"
+                        Else
+                            lblEntryCategory.Text = "Commercial"
+                        End If
+                        lblEntryType.Text = EntryTypesDT(0).EntryTypeName
+                    End With
+                    lblEntryReqs.Text = EntryTypesDT(0).EntryTypeReqs
+                    SetUpPhotos(EntriesDT(0).EntryTypeID)
+                    Select Case EntriesDT(0).EntryTypeID 'for color need add'l info
+                        'Case 2, 12 'color info REQUD for color palette & color
+                        '    pnlAddlInfo.Visible = True
+                        '    lblColorInfo.Text = "Provide the following color info:"
+                        '    RequiredFieldValidator4.Enabled = True
+                        Case 2, 4, 10, 12 'color info OPTIONAL for Makeover / multic makeover
+                            '2015 color info optional. 
+                            pnlAddlInfo.Visible = True
+                            lblColorInfo.Text = "(optional) Provide the following color info if applicable:"
+                            RequiredFieldValidator4.Enabled = False
+                        Case Else
+                            pnlAddlInfo.Visible = False
+                    End Select
+                Case 2 'Photos entered
+                    pnl1New.Visible = False
+                    pnl2UploadPhoto.Visible = False
+                    pnl35ReleaseOrPayment.Visible = False
+                    pnl4UploadRelease.Visible = False
+                    pnl5Thanks.Visible = False
+                    pnl6Continue.Visible = False
+                    pnlPhotoReqs.Visible = False
+                    pnl3Releases.Visible = True
+                    imbBack.Visible = True
+                    imgStep.ImageUrl = "~/resources/images/steps_3.gif"
+                    lblStep.Text = "3. Model Release"
+                    If AccountType = 2 Then
+                        pnl0SelectStylist.Visible = True
+                        SetStylists()
+                        ddlStylist.SelectedValue = EntriesDT(0).UserID
+                        ddlStylist.Enabled = False
+                        tbStylistName.Text = ddlStylist.SelectedItem.Text
+                        tbStylistName.Enabled = False 'can't manually change stylist name here
+                        ddlStylist.ForeColor = Drawing.Color.Gray
+                    Else
+                        pnl0SelectStylist.Visible = False
+                        Dim UsersDT As Users.ASA_UsersDataTable
+                        Dim UsersTA As New UsersTableAdapters.ASA_UsersTableAdapter
+                        UsersDT = UsersTA.GetUserByUserID(EntriesDT(0).UserID)
+                        tbStylistName.Text = UsersDT(0).FName & " " & UsersDT(0).LName
+                    End If
+                    If Not EntriesDT(0).IsModelNameNull Then
+                        If EntriesDT(0).ModelName <> "" Then
+                            tbModelName.Text = EntriesDT(0).ModelName
+                        End If
+                    End If
+                    If Not EntriesDT(0).IsPhotographerNameNull Then
+                        If EntriesDT(0).PhotographerName <> "" Then
+                            tbPhotographerName.Text = EntriesDT(0).PhotographerName
+                        End If
+                    End If
+                Case 3 'Model Info Entered; Generate release or Make Payment
+                    pnl1New.Visible = False
+                    pnl2UploadPhoto.Visible = False
+                    pnl3Releases.Visible = False
+                    pnl4UploadRelease.Visible = False
+                    pnl5Thanks.Visible = False
+                    pnl6Continue.Visible = False
+                    pnlPhotoReqs.Visible = False
+                    pnl35ReleaseOrPayment.Visible = True
+                    lblReleaseSuccess.Visible = False
+                    imbBack.Visible = True
+                    imgStep.Visible = True
+                    imgStep.ImageUrl = "~/resources/images/steps_4.gif"
+                    lblStep.Text = "Release & Payment"
+                    With EntriesDT(0)
+                        If Not .IsPaymentCompleteNull Then
+                            'disable back if payment is complete
+                            If .PaymentComplete = True Then
+                                hlPayment.Visible = False
+                                imbBack.Visible = False
+                                'imgStep.Visible = False
+                            End If
+                        End If
+                    End With
+                    If AccountType = 2 Then
+                        pnl0SelectStylist.Visible = True
+                        SetStylists()
+                        ddlStylist.SelectedValue = EntriesDT(0).UserID
+                        ddlStylist.Enabled = False
+                        ddlStylist.ForeColor = Drawing.Color.Gray
+                    Else
+                        pnl0SelectStylist.Visible = False
+                    End If
+                    If Not Request.QueryString("ReleasePrinted") Is Nothing Then
+                        If Request.QueryString("ReleasePrinted").ToString.ToLower = "true" Then
+                            pnl35ReleaseOrPayment.Visible = False
+                            pnl4UploadRelease.Visible = True
+                        End If
+                    End If
+                Case 4 'Release uploaded; no payment. 2015 4 & 5 are alternatives. Not sequential.
+                    pnl1New.Visible = False
+                    pnl2UploadPhoto.Visible = False
+                    pnl3Releases.Visible = False
+                    pnl4UploadRelease.Visible = False
+                    pnl5Thanks.Visible = False
+                    pnl6Continue.Visible = False
+                    pnlPhotoReqs.Visible = False
+                    pnl35ReleaseOrPayment.Visible = True
+                    If Not Request.UrlReferrer Is Nothing Then
+                        If InStr(Request.UrlReferrer.AbsolutePath.ToString.ToLower, "asarelease") > 0 Or InStr(Request.UrlReferrer.AbsolutePath.ToString.ToLower, "asaentrycreateedit") > 0 Then
+                            'the second test above is bad. For Manager accounts causes greying out on User change postback.
+                            hlUploadRelease.ForeColor = Drawing.Color.LightGray
+                            lblReleaseSuccess.Visible = True
+                        Else
+                            hlUploadRelease.Text = "&nbsp;Re-upload release"
+                            lblReleaseSuccess.Visible = False
+                        End If
+                    Else
+                        hlUploadRelease.Text = "Re-upload release"
+                        lblReleaseSuccess.Visible = False
+                    End If
+                    imgStep.ImageUrl = "~/resources/images/steps_5.gif"
+                    imbBack.Visible = True
+                    If AccountType = 2 Then
+                        pnl0SelectStylist.Visible = True
+                        SetStylists()
+                        ddlStylist.SelectedValue = EntriesDT(0).UserID
+                        ddlStylist.Enabled = False
+                        ddlStylist.ForeColor = Drawing.Color.Gray
+                    Else
+                        pnl0SelectStylist.Visible = False
+                    End If
+                Case 5 'Payment Submitted; release not uploaded. 2015 4 & 5 are alternatives. Not sequential.
+                    pnl1New.Visible = False
+                    pnl2UploadPhoto.Visible = False
+                    pnl3Releases.Visible = False
+                    pnl35ReleaseOrPayment.Visible = False
+                    imbBack.Visible = False
+                    pnlPhotoReqs.Visible = False
+                    pnl6Continue.Visible = False
+                    pnl4UploadRelease.Visible = True
+                    imbBack.Visible = False
+                    imgStep.ImageUrl = "~/resources/images/steps_5.gif"
+                    If AccountType = 2 Then
+                        pnl0SelectStylist.Visible = True
+                        SetStylists()
+                        ddlStylist.SelectedValue = EntriesDT(0).UserID
+                        ddlStylist.Enabled = False
+                        ddlStylist.ForeColor = Drawing.Color.Gray
+                    Else
+                        pnl0SelectStylist.Visible = False
+                    End If
+                Case 6 'Release received & payment complete. Although not checked out by corporate yet. Can still re-upload release.
+                    pnl1New.Visible = False
+                    pnl2UploadPhoto.Visible = False
+                    pnl3Releases.Visible = False
+                    pnl4UploadRelease.Visible = False
+                    imbBack.Visible = False
+                    pnlPhotoReqs.Visible = False
+                    pnl6Continue.Visible = False
+                    pnl35ReleaseOrPayment.Visible = True
+                    hlPayment.Visible = False
+                    hlUploadRelease.Text = "Re-upload release"
+                    lblReleaseSuccess.Visible = False
+                    lblStep.Visible = False
+                    lblStepWord.Visible = False
+                    imgStep.Visible = False
+                    If AccountType = 2 Then
+                        pnl0SelectStylist.Visible = True
+                        SetStylists()
+                        ddlStylist.SelectedValue = EntriesDT(0).UserID
+                        ddlStylist.Enabled = False
+                        ddlStylist.ForeColor = Drawing.Color.Gray
+                    Else
+                        pnl0SelectStylist.Visible = False
+                    End If
+                Case Else 'for 7 - entry complete
+                    imbBack.Visible = False
+                    pnl1New.Visible = False
+                    pnl2UploadPhoto.Visible = False
+                    pnl3Releases.Visible = False
+                    pnl35ReleaseOrPayment.Visible = False
+                    pnl4UploadRelease.Visible = False
+                    pnlPhotoReqs.Visible = False
+                    lblStep.Visible = False
+                    imgStep.Visible = False
+                    pnl6Continue.Visible = True
+            End Select
+        Else
+        End If
+    End Sub
+    'Protected Sub hlPrintRelease_Click(sender As Object, e As System.EventArgs) Handles hlPrintRelease.Click
+    '    Response.Redirect("ASARelease.aspx?EntryID=" & Session("EntryID"))
+    'End Sub
+    Protected Sub hlUploadRelease_Click(sender As Object, e As System.EventArgs) Handles hlUploadRelease.Click
+        
+        pnl35ReleaseOrPayment.Visible = False
+        pnl4UploadRelease.Visible = True
+    End Sub
+    Protected Sub imbUpload_Click(sender As Object, e As System.Web.UI.ImageClickEventArgs) Handles imbUploadRelease.Click
+        Dim ReleaseFileName As String
+        'Check that release in correct format and size
+        'test for proper file format
+        Dim releaseExt As String = Right(fuRelease.FileName.ToLower.ToString, 4)
+        If releaseExt <> "jpeg" Then
+            releaseExt = Right(releaseExt, 3)
+            If Not (releaseExt = "jpg" Or releaseExt = "gif" Or releaseExt = "pdf" Or releaseExt = "png") Then
+                lblReleaseUploadError.Text = "Release form must be jpg, pdf, gif, or png format."
+                Exit Sub
+            End If
+        End If
+        If fuRelease.FileContent.Length > 4096000 Then
+            lblReleaseUploadError.Text = "File size must be less than 4MB."
+            Exit Sub
+        End If
+        Try
+            ' need to delete the old file - check see if there was an old file
+            ReleaseFileName = CStr(Session("EntryID")) + "_release.jpg"
+            If System.IO.File.Exists(Server.MapPath("~/submissions/releases/" + ReleaseFileName)) Then
+                Kill(Server.MapPath("~/submissions/releases/" + ReleaseFileName))
+            End If
+            ReleaseFileName = CStr(Session("EntryID")) + "_release.pdf"
+            If System.IO.File.Exists(Server.MapPath("~/submissions/releases/" + ReleaseFileName)) Then
+                Kill(Server.MapPath("~/submissions/releases/" + ReleaseFileName))
+            End If
+            ReleaseFileName = CStr(Session("EntryID")) + "_release.png"
+            If System.IO.File.Exists(Server.MapPath("~/submissions/releases/" + ReleaseFileName)) Then
+                Kill(Server.MapPath("~/submissions/releases/" + ReleaseFileName))
+            End If
+            ReleaseFileName = CStr(Session("EntryID")) + "_release.gif"
+            If System.IO.File.Exists(Server.MapPath("~/submissions/releases/" + ReleaseFileName)) Then
+                Kill(Server.MapPath("~/submissions/releases/" + ReleaseFileName))
+            End If
+            ReleaseFileName = Left(ReleaseFileName, InStrRev(ReleaseFileName, ".")) & releaseExt
+            fuRelease.SaveAs(Server.MapPath("~/submissions/releases/" + ReleaseFileName))
+        Catch ex As Exception
+            'Response.Write(ex.Message.ToString)
+            lblReleaseUploadError.Text = "Unable to save the file: " & ex.Message.ToString
+            Exit Sub
+        End Try
+        'At this point the release has been uploaded.  update status & move on to next screen.
+        Dim EntriesDT As Entries.ASA_EntriesDataTable
+        Dim EntriesTA As New EntriesTableAdapters.ASA_EntriesTableAdapter
+        EntriesDT = EntriesTA.GetEntryByEntryID(Session("EntryID"))
+        If EntriesDT.Count > 0 Then
+            With EntriesDT(0)
+                '.ReleaseReceived = True
+                '2015 reserving ReleaseReceived to mean CONFIRMED by corporate.
+                If Not .IsPaymentCompleteNull Then
+                    If .PaymentComplete = True Then
+                        .EntryStatus = 6
+                    Else
+                        .EntryStatus = 4
+                    End If
+                Else
+                    .EntryStatus = 4
+                End If
+                EntriesTA.Update(EntriesDT)
+                CheckEntryStatus(.EntryID)
+            End With
+        End If
+    End Sub
+    Protected Sub SetCategory(ByVal theEntryTypeID As Integer)
+        If ddlCategory.SelectedIndex = -1 Then
+            SetCategories()
+        End If
+        If theEntryTypeID >= 2 And theEntryTypeID <= 10 Then
+            ddlCategory.SelectedIndex = 2
+            SetEntryTypes(ddlCategory.SelectedIndex - 1)
+            ddlEntryType.SelectedIndex = (theEntryTypeID - 1)
+        ElseIf theEntryTypeID > 10 Then
+            ddlCategory.SelectedIndex = 3
+            SetEntryTypes(ddlCategory.SelectedIndex)
+            ddlEntryType.SelectedIndex = (theEntryTypeID - 10)
+        End If
+    End Sub
+    Protected Sub SetEntryTypes(ByVal theCategory As Integer)
+        Dim EntryTypesDT As Entries.ASA_EntryTypesDataTable
+        Dim EntryTypesTA As New EntriesTableAdapters.ASA_EntryTypesTableAdapter
+        EntryTypesDT = EntryTypesTA.GetEntryTypesFromCategoryID(theCategory)
+        If EntryTypesDT.Count > 0 Then
+            ddlEntryType.DataSource = EntryTypesDT
+            ddlEntryType.DataTextField = "EntryTypeName"
+            ddlEntryType.DataValueField = "EntryTypeID"
+            ddlEntryType.DataBind()
+            ddlEntryType.Items.Insert(0, New ListItem("-- Select Entry Type --", "-- Select Entry Type --"))
+            'ddlEntryType.SelectedIndex = 0
+        End If
+    End Sub
+    Protected Sub SetUpPhotos(ByVal TheEntryType As Integer)
+        Dim EntryTypesDT As Entries.ASA_EntryTypesDataTable
+        Dim EntryTypesTA As New EntriesTableAdapters.ASA_EntryTypesTableAdapter
+        EntryTypesDT = EntryTypesTA.GetEntryTypeDetailsByEntryTypeId(TheEntryType)
+        If EntryTypesDT.Count > 0 Then
+            If EntryTypesDT(0).PhotosRequired > 1 Then
+                pnlPhoto2.Visible = True
+                If EntryTypesDT(0).EntryTypeID = 3 Then 'glamour gets own wording
+                    lblPhoto1.Text = "Upload 1st (Back View) Photo"
+                    lblPhoto2.Text = "Upload 2nd (Profile View) Photo"
+                Else
+                    lblPhoto1.Text = "Upload 1st (BEFORE) Photo"
+                    lblPhoto2.Text = "Upload 2nd (AFTER) Photo"
+                End If
+            Else
+                pnlPhoto2.Visible = False
+                lblPhoto1.Text = "Upload Photo"
+            End If
+        End If
+    End Sub
+    Protected Sub imbBack_Click(sender As Object, e As System.Web.UI.ImageClickEventArgs) Handles imbBack.Click
+        If Not Session("EntryID") Is Nothing Then
+            Dim theEntryID As Integer = Session("EntryID")
+            Dim EntriesDT As Entries.ASA_EntriesDataTable
+            Dim EntriesTA As New EntriesTableAdapters.ASA_EntriesTableAdapter
+            EntriesDT = EntriesTA.GetEntryByEntryID(theEntryID)
+            If EntriesDT.Count > 0 Then
+                With EntriesDT(0)
+                    'If lblReleaseReminder.Visible = False Then
+                    'for 2015, add ability to proceed w/o release
+                    '    'if lblReleaseReminder.Visible is True, that means they skipped the release printing, so don't change status
+                    'End If
+                    Select Case .EntryStatus
+                        Case 1 'Back from Upload Photos page (Status 1 = Entry Type Selected)
+                            .EntryStatus = 0 'role back to choose entry type
+                        Case 2 'Back from Model info page (Status 2 = Photos Uploaded)
+                            .EntryStatus = 1
+                        Case 3 'Back from Relase/payment page (Status 3 = Release Info Entered)
+                            .EntryStatus = 2
+                        Case 4 'Back from Release Uploaded page (Status 4 = Release Uploaded - No Payment)
+                            .EntryStatus = 3
+                            'Case 5 '
+                        Case Else
+                    End Select
+                    EntriesTA.Update(EntriesDT)
+                    CheckEntryStatus(theEntryID)
+                End With
+            End If
+        End If
+    End Sub
+    Protected Function GenerateID(ByRef len As Integer, ByRef upper As Boolean) As String
+        'use this to generate a temporary session variable for printing the release form
+        Dim rand, randBool As New Random()
+        Dim Letters() As Char = "abcdefghijklmnopqrstuvwxyz".ToCharArray()
+        Dim Numbers() As Char = "0123456789".ToCharArray()
+        Dim final As String = String.Empty
+        For i As Integer = 0 To len - 1
+            If randBool.Next(0, 5) < 2 Then 'The ID will be 60/40 numbers/letters
+                final += Letters(rand.Next(Letters.Length - 1))
+            Else
+                final += Numbers(rand.Next(Numbers.Length - 1))
+            End If
+        Next
+        Return IIf(upper, final.ToUpper(), final)
+    End Function
+End Class
+
+</pre>
+</body>
+</html>

@@ -1,0 +1,454 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <title>Code 2 example</title>
+    <meta charset="utf-8" />
+    <script src="https://cdn.rawgit.com/google/code-prettify/master/loader/run_prettify.js"></script>
+</head>
+<body>
+    <h1>Code 2 example - Payment listener to receive Paypal transaction info</h1>
+    <pre class="prettyprint">
+Imports System.Text.RegularExpressions
+Imports System.Net.Mail
+Imports System.Net
+Imports System.IO
+Imports System.Web.Configuration
+Imports System.Data.SqlClient
+Partial Class pages_entries_ASAPaymentListener
+    Inherits System.Web.UI.Page
+    Dim SendEmailUse As String = "REDACTED"
+    Protected Sub Page_Load(ByVal sender As Object, ByVal e As System.EventArgs) Handles Me.Load
+        '2015 June PayPal is setup to send the IPN to staging. Not sure if this is a problem for this year...
+        'Next year MAKE SURE to change the PayPal setting to NOT go to staging.
+        'TestDBInsert("test")
+        ' March 2014 created this Sub TestDBInsert for testing as Email response is slow & buggy
+        Dim theResponse As String = ValidateRequest() 'ValidateRequest() '"VERIFIED" '
+        Dim Go As Boolean = False
+        Dim emailTest As String = "REDACTED" 'for PayPal beta-sandbox "seller@paypalsandbox.com" '
+        Dim emailLive As String = "REDACTED"
+        'ASSIGN LIVE OR TEST HERE:
+        Dim emailUse As String = emailLive
+        Response.Write(theResponse)
+        'theResponse = "VERIFIED"
+        If theResponse = "VERIFIED" Then
+            'check that receiver_email is your Primary PayPal email
+            'disabled 3/26/14
+            If (Request.Form("receiver_email").ToString = emailUse) Or (Request.Form("receiver_email").ToString <> emailUse) Then
+                'Next check that txn_id has not been previously processed
+                Dim connstr As String = WebConfigurationManager.ConnectionStrings("REDACTED").ConnectionString
+                Dim sSql As String
+                sSql = "SELECT Id FROM PPalTxns Where txn_id = '" & Request.Form("txn_id") & "'"
+                Dim sSqlConn As New SqlConnection(connstr)
+                Dim cmdGetTxnInfo As SqlCommand
+                cmdGetTxnInfo = New SqlCommand(sSql, sSqlConn)
+                Dim dr As SqlDataReader
+                cmdGetTxnInfo.Connection = sSqlConn
+                sSqlConn.Open()
+                Try
+                    dr = cmdGetTxnInfo.ExecuteReader()
+                Catch ex As Exception
+                    'Error connecting to db table.  Log.
+                    ErrHandler.WriteError("Error connecting to db to check incoming transaction against our table: " & ex.Message.ToString)
+                    SendEmail("An incoming PayPal transaction produced an error: <br />" & ex.Message.ToString, "PayPal Transaction Error", SendEmailUse)
+                    Exit Sub
+                End Try
+                'TestDB.TestDBInsert(dr.HasRows)
+                If dr.HasRows Then
+                    'txn has already been processed
+                    SendEmail("<div style="" font-family Arial, Sans-Serif; font-size 12px;"">The following already processed transaction was received from PayPal: <br /><br />  " & Request.Form.ToString & " </div>", "PayPal txn Already processed", "mark.giacobbe@dessange-inc.com")
+                Else
+                    'it's a new txn:
+                    'PayPal documentation recommends verifying if price, item description, etc. match what's on the website.
+                    'at any rate, if all is well, then insert new row in PPalTxns table
+                    dr.Close() 'close the reader from before cuz we don't need it any longer
+                    Dim formValues As NameValueCollection = Request.Form
+                    If Request.Form("txn_type") <> "web_accept" Then
+                        'This is not an ASA Payment 
+                        Exit Sub
+                    End If
+                    'TestDB.TestDBInsert(Request.Form("payment_status"))
+                    'check the payment_status
+                    Select Case Request.Form("payment_status")
+                        Case "Completed"
+                            Go = InsertPayPalTxn(formValues, sSqlConn)
+                        Case "Refunded"
+                            Go = InsertPayPalTxn(formValues, sSqlConn)
+                        Case "Canceled_Reversal"
+                            Go = InsertPayPalTxn(formValues, sSqlConn)
+                        Case "Denied"
+                            Go = InsertPayPalTxn(formValues, sSqlConn)
+                        Case "Expired"
+                            Go = InsertPayPalTxn(formValues, sSqlConn)
+                        Case "Failed"
+                            Go = InsertPayPalTxn(formValues, sSqlConn)
+                        Case "Pending"
+                            Go = InsertPayPalTxn(formValues, sSqlConn)
+                        Case "Reversed"
+                            Go = InsertPayPalTxn(formValues, sSqlConn)
+                        Case "Processed"
+                            Go = InsertPayPalTxn(formValues, sSqlConn)
+                        Case "Voided"
+                            Go = InsertPayPalTxn(formValues, sSqlConn)
+                        Case Else
+                            'It's a payment status that we DON'T want to process.  Log.
+                            ErrHandler.WriteError("Transaction received from PayPal NOT Processed by our code.  Status is " & Request.Form("payment_status") & " and txn_id is " & Request.Form("txn_id"))
+                            SendEmail("An incoming PayPal transaction produced an error: <br />" & Request.Form("payment_status"), "PayPal Transaction Error", SendEmailUse)
+                            Exit Sub
+                    End Select
+                End If
+                sSqlConn.Close()
+            Else
+                'Receiver email is not ours.  Possible hack:  LOG.
+                ErrHandler.WriteError("Transaction received from PayPal with receiver email NOT ours: " & Request.Form("receiver_email"))
+                SendEmail("An incoming PayPal transaction produced an error: receiver email NOT ours (check log for details)", "PayPal Transaction Error", SendEmailUse)
+                Exit Sub
+            End If
+            If Go = True Then 'Send success notification
+                SetupSuccessEmail(Request.Form("txn_id"))
+            End If
+        ElseIf theResponse = "INVALID" Then
+            ErrHandler.WriteError("""Invalid"" response from PayPal")
+            SendEmail("An incoming PayPal transaction produced an error: INVALID response (check log for details)", "PayPal Transaction Error", SendEmailUse)
+        Else
+            '    'Response wasn't VERIFIED or INVALID, log for manual investigation
+            ' ErrHandler.WriteError("Response received from PayPal neither VERIFIED or INVALID.  Response is: " & theResponse)
+            SendEmail("An incoming PayPal transaction produced an error: unkown response (check log for details)", "PayPal Transaction Error", SendEmailUse)
+        End If
+    End Sub
+    Protected Function ValidateRequest() As String 'validates querystring
+        'Post back to either test or live
+        Dim strTest As String = "https://www.sandbox.paypal.com/cgi-bin/webscr"
+        Dim strLive As String = "https://www.paypal.com/cgi-bin/webscr"
+        'SET LIVE OR TEST HERE
+        Dim strUSE As String = strLive
+        Dim req As HttpWebRequest = CType(WebRequest.Create(strUSE), HttpWebRequest)
+        'Set values for the request back
+        req.Method = "POST"
+        req.ContentType = "application/x-www-form-urlencoded"
+        Dim Param() As Byte = Request.BinaryRead(HttpContext.Current.Request.ContentLength)
+        Dim strRequest As String = Encoding.ASCII.GetString(Param)
+        strRequest = strRequest + "&cmd=_notify-validate"
+        req.ContentLength = strRequest.Length
+        'for proxy
+        'Dim proxy As New WebProxy(New System.Uri("http://url:port#"))
+        'req.Proxy = proxy
+        'Send the request to PayPal and get the response
+        Dim streamOut As StreamWriter = New StreamWriter(req.GetRequestStream(), Encoding.ASCII)
+        streamOut.Write(strRequest)
+        streamOut.Close()
+        Try
+            Dim streamIn As StreamReader = New StreamReader(req.GetResponse().GetResponseStream())
+            Dim strResponse As String = streamIn.ReadToEnd()
+            streamIn.Close()
+            Return strResponse
+        Catch ex As Exception
+            Return ex.ToString
+        End Try
+    End Function
+    Protected Function InsertPayPalTxn(ByVal formValues As NameValueCollection, ByVal sSqlConn As SqlConnection) As Boolean
+        '''''''''''''''''''''''''''''''''''''''''''''''''''
+        '
+        'This function relies on the file App_Data/PPalTxnsFields.xml
+        'which contains all the fields you might want to insert.
+        'Doing it this way to avoid using datatables or having to re-do
+        'INSERT statements if the db fields change.
+        'This way you just have to change the XML file.
+        '
+        '''''''''''''''''''''''''''''''''''''''''''''''''''
+        Dim cmdInsert As New SqlCommand
+        cmdInsert.CommandType = CommandType.Text
+        Dim sInsText As String = "INSERT PPalTxns ("
+        Dim sInsTextValues As String = ""
+        Dim myDbFields = New DataSet
+        Try
+            myDbFields.ReadXml(MapPath("~/App_Data/PPalTxnsFields.xml"))
+            Dim row As DataRow
+            'Dim column As DataColumn
+            With myDbFields.Tables(0)
+                For Each row In .Rows
+                    If row(1) = 1 Then 'value 1 in the XML is a switch that means you want that field to be inserted
+                        With row(0)
+                            'If Not (formValues(.ToString) Is Nothing) Then 
+                            'make sure the fields in the xml file match what's in the IPN data
+                            'BUT we may not want to check this - if there's a mismatch, just let it fail & log the error downstream
+                            sInsText = sInsText & .ToString & ", "
+                            cmdInsert.Parameters.AddWithValue("@" & .ToString, GetParameter(formValues(.ToString)))
+                            sInsTextValues = sInsTextValues & "@" & .ToString & ", "
+                            'End If
+                        End With
+                    End If
+                Next row
+            End With
+            'have to trim the end of this parameter b/c PayPal appends PDT at the end which SQL doesn't like
+            cmdInsert.Parameters("@payment_date").Value = DateTime.Parse(Left(GetParameter(formValues("payment_date")), formValues("payment_date").Length - 3))
+            sInsText = sInsText.Substring(0, sInsText.Length - 2) & ")"
+            sInsTextValues = " VALUES (" & sInsTextValues.Substring(0, sInsTextValues.Length - 2) & ")"
+            sInsText = sInsText & sInsTextValues
+            'SendEmail(sInsText, "Insert statement", SendEmailUse)
+            cmdInsert.CommandText = sInsText
+            cmdInsert.Connection = sSqlConn
+        Catch ex As Exception
+            'SendEmail(ex.Message.ToString, "exception", SendEmailUse)
+            'Exit Function
+        End Try
+        Try
+            cmdInsert.ExecuteNonQuery()
+            If formValues("payment_status") = "Completed" Then
+                Try
+                    InsertTxnDetails(formValues, sSqlConn) 'this calls the function below to insert individual items into TxnDetails table
+                Catch ex As Exception
+                    ErrHandler.WriteError("There was an error inserting the PayPal transaction details: " & ex.Message)
+                End Try
+                'Update ASA tables here
+                Try
+                    UpdateASAEntries(formValues("custom"))
+                Catch ex As Exception
+                    ErrHandler.WriteError("Problem updating Entries as paid on line 266. Also: " & ex.ToString)
+                End Try
+            End If
+            'SendEmail("Success!", "INSERT success!", SendEmailUse)
+            Return True
+        Catch ex As Exception
+            ErrHandler.WriteError("There was a problem inserting a PayPal transaction into the database: <br />" & ex.Message.ToString)
+            SendEmail("There was a problem inserting a PayPal transaction into the database: <br />" & ex.Message.ToString, "DB insert ERROR", SendEmailUse)
+            Return False
+        End Try
+    End Function
+    Protected Function GetParameter(ByVal theValue As String) As String
+        If Not theValue Is Nothing Then
+            Return theValue
+        Else
+            Return ""
+        End If
+    End Function
+    Protected Function InsertTxnDetails(ByVal formValues As NameValueCollection, ByVal sSqlConn As SqlConnection) As Boolean
+        Dim InsertStmt As String = ""
+        Dim ItemCount As Integer = 1
+        Dim Cont As Boolean = False
+        Dim formValueName As String = ""
+        Dim cmdInsertDetails As New SqlCommand
+        cmdInsertDetails.CommandType = CommandType.Text
+        cmdInsertDetails.Connection = sSqlConn
+        cmdInsertDetails.Parameters.Add("@txn_id", SqlDbType.VarChar)
+        cmdInsertDetails.Parameters.Add("@item_number", SqlDbType.VarChar)
+        cmdInsertDetails.Parameters.Add("@item_name", SqlDbType.VarChar)
+        cmdInsertDetails.Parameters.Add("@quantity", SqlDbType.VarChar)
+        Do While Cont = False
+            formValueName = "item_name" & ItemCount.ToString
+            If GetParameter(formValues(formValueName)) <> "" Then
+                InsertStmt = "INSERT PPalTxnDetails (txn_id, item_number, item_name, quantity)"
+                cmdInsertDetails.Parameters("@txn_id").Value = GetParameter(formValues("txn_id"))
+                cmdInsertDetails.Parameters("@item_number").Value = GetParameter(formValues("item_number" & ItemCount.ToString))
+                cmdInsertDetails.Parameters("@item_name").Value = GetParameter(formValues("item_name" & ItemCount.ToString))
+                cmdInsertDetails.Parameters("@quantity").Value = GetParameter(formValues("quantity" & ItemCount.ToString))
+                InsertStmt = InsertStmt & " VALUES (@txn_id, @item_number, @item_name, @quantity)"
+                cmdInsertDetails.CommandText = InsertStmt
+                Try
+                    cmdInsertDetails.ExecuteNonQuery()
+                Catch ex As Exception
+                    ErrHandler.WriteError("There was a problem inserting the Transaction Details into the PPalTxnDetails table: " & ex.Message.ToString)
+                    SendEmail("There was a problem inserting the Transaction Details into the PPalTxnDetails table: <br />" & ex.Message.ToString, "DB insert ERROR", SendEmailUse)
+                End Try
+                ItemCount = ItemCount + 1
+            Else
+                Cont = True
+            End If
+        Loop
+        Return True
+    End Function
+    Protected Function UpdateASAEntries(ByVal entries As String) As Boolean
+        'Dim entries As String = String.Empty
+        Dim UpdatePaymentSuccess As Boolean = False
+        If Not entries = String.Empty Then
+            Try
+                'UNOCMMENT FOLLOWING LINE
+                entries = entries.Replace("%7C", "|") 'replace hex character with pipe so that the pipe can be parsed out
+                'Test:
+                'entries = "207|362" 'separate multiple entries with a pipe 
+                Dim strArr As String()
+                strArr = entries.Split("|"c)
+                Dim EntriesDT, EntriesDT2 As Entries.ASA_EntriesDataTable
+                Dim EntriesTA As New EntriesTableAdapters.ASA_EntriesTableAdapter
+                Dim UsersDT As Users.ASA_UsersDataTable
+                Dim UsersTA As New UsersTableAdapters.ASA_UsersTableAdapter
+                Dim dv As DataView
+                Dim dtStylistofYear As New DataTable
+                dtStylistofYear.Columns.Add("UserID")
+                dtStylistofYear.Columns.Add("UserName")
+                For Each s As String In strArr
+                    EntriesDT = EntriesTA.GetEntryByEntryID(CInt(s))
+                    If EntriesDT.Count > 0 Then
+                        'Update paid info
+                        EntriesDT(0).PaymentAmount = 25.0
+                        EntriesDT(0).PaymentComplete = True
+                        If EntriesDT(0).EntryStatus = 3 Then
+                            'release hasn't been uploaded yet.
+                            EntriesDT(0).EntryStatus = 5
+                        Else
+                            'release has been uploaded.
+                            EntriesDT(0).EntryStatus = 6
+                        End If
+                        EntriesTA.Update(EntriesDT)
+                        '2015 NEW Soty process: Since they must be category finalists to really qualify, 
+                        'there's no need to do anything with SOTY here.
+                        'Check the USER for this entry. Are they stylist of the year?
+                        'UsersDT = UsersTA.GetUserByUserID(EntriesDT(0).UserID)
+                        'If UsersDT(0).StylistOfTheYear = False Then
+                        '    'If NO, do they now qualify?
+                        '    'Get all the entries for the user; filter for complete;
+                        '    'check that: > 3; proper amount for each entry type. (see rules for specifics)
+                        '    'if so, enter them.
+                        '    '2. do the AGG query using the EntryIDs from step 1 
+                        '    EntriesDT2 = EntriesTA.GetSOTYCommercialEntries(EntriesDT(0).UserID)
+                        '    If EntriesDT2.Count >= 2 Then
+                        '        'they have at least 2 elgible entries
+                        '        Dim SOTYCommEntry1, SOTYCommEntry2 As Integer
+                        '        SOTYCommEntry1 = EntriesDT2.Rows(0).Item("MaxEntryID")
+                        '        SOTYCommEntry2 = EntriesDT2.Rows(1).Item("MaxEntryID")
+                        '        EntriesDT2 = EntriesTA.GetEntriesByUserID(EntriesDT(0).UserID)
+                        '        dv = New DataView(EntriesDT2, "PaymentComplete = 'True' AND EntryTypeID > 10 AND EntryTypeID < 15", "EntryID", DataViewRowState.CurrentRows)
+                        '        'dv.RowFilter = "PaymentComplete = 'True' AND EntryTypeID > 10"
+                        '        If dv.Count >= 1 Then
+                        '            'Conditions MET. 2 + 1 entries. Do it up.
+                        '            'If YES they qualify; update the record add to datatable to show who got added below.
+                        '            UsersDT(0).StylistOfTheYear = True
+                        '            UsersTA.Update(UsersDT)
+                        '            'also must create new entry in Entries table 4/10/13
+                        '            Dim SOTYArtisticEntry As Integer = dv(0).Item(0)
+                        '            EntriesTA.InsertEntryFullInfo(Now, 15, UsersDT(0).UserID, Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, Nothing, 6, Nothing)
+                        '            Dim SOTYDT As Entries.ASA_SOTYDataTable
+                        '            Dim SOTYTA As New EntriesTableAdapters.ASA_SOTYTableAdapter
+                        '            SOTYDT = SOTYTA.GetSOTYInfoByUserID(UsersDT(0).UserID)
+                        '            If SOTYDT.Count = 0 Then
+                        '                'insert into SOTY table if not already
+                        '                SOTYTA.InsertSOTY(UsersDT(0).UserID, SOTYCommEntry1, SOTYCommEntry2, SOTYArtisticEntry)
+                        '            End If
+                        '            With dv
+                        '                'Check if the user is already in the datatable.
+                        '                dtStylistofYear.Select("UserID = " & dv(0).Item(3))
+                        '                If dtStylistofYear.Rows.Count = 0 Then
+                        '                    'If Not, add them.
+                        '                    Dim newRow As DataRow
+                        '                    newRow = dtStylistofYear.NewRow
+                        '                    newRow("UserID") = dv(0).Item(3)
+                        '                    newRow("UserName") = dv(0).Item(16)
+                        '                    dtStylistofYear.Rows.Add(newRow)
+                        '                End If
+                        '            End With
+                        '        End If
+                        '    End If
+                        'End If
+                    End If
+                Next s
+                UpdatePaymentSuccess = True
+            Catch ex As Exception
+                ErrHandler.WriteError("There was a problem marking entries as PAID after successful IPN received from PayPal. Entry nos <strong> " & entries & "</strong>. " & ex.Message)
+                SendEmail("There was a problem marking entries as PAID after successful IPN received from PayPal. Entry nos <strong> " & entries & "</strong>", "Problem Updating ASA Entries from PayPal", SendEmailUse)
+            End Try
+        End If
+        Return UpdatePaymentSuccess
+    End Function
+    Protected Sub SendEmail(ByVal Body As String, ByVal Subject As String, ByVal Email As String)
+        Dim mmReminder As New MailMessage()
+        mmReminder.From = New MailAddress("REDACTED", "REDACTED")
+        mmReminder.To.Add(Email)
+        mmReminder.Subject = Subject
+        mmReminder.IsBodyHtml = True
+        mmReminder.Body = Body
+        Dim smtpMail As New SmtpClient
+        smtpMail.UseDefaultCredentials = True
+        'smtpMail.Credentials = New System.Net.NetworkCredential("fswebsite@gmail.com", "lsh0905")
+        smtpMail.Host = System.Configuration.ConfigurationManager.AppSettings("MailServer")
+        smtpMail.Port = 25
+        'you have to setup IIS for it to work: Default SMTP Virtual Server > Properties > Access > Relay > GRANT to 127.0.0.1
+        Try
+            'Response.Write(Body) 'Use this for local testing from TestPost.aspx
+            smtpMail.Send(mmReminder)
+        Catch smtpExc As SmtpException
+            ErrHandler.WriteError("There was an email error: " & smtpExc.Message.ToString)
+        End Try
+    End Sub
+    Protected Sub SetupSuccessEmail(ByVal txn_id As String)
+        Dim connstr As String = WebConfigurationManager.ConnectionStrings("REDACTED").ConnectionString
+        Dim sSqlConn As New SqlConnection(connstr)
+        Dim MyCommand As New SqlCommand("spGetPpalTxn", sSqlConn) 'this is the sp to get the query
+        MyCommand.CommandType = CommandType.StoredProcedure
+        Dim sqlAdp As New SqlDataAdapter
+        Dim ds As New DataSet
+        Dim EmailContent As String = ""
+        Dim Completed As Boolean = False
+        MyCommand.Parameters.Add(New SqlParameter("@txn_id", Data.SqlDbType.VarChar, 17))
+        MyCommand.Parameters("@txn_id").Value = txn_id
+        MyCommand.Connection = sSqlConn
+        'shoud do a Try here
+        MyCommand.Connection.Open()
+        sqlAdp.SelectCommand = MyCommand
+        Try
+            sqlAdp.Fill(ds)
+            With ds.Tables(0)
+                If .Rows.Count > 0 Then 'Data was returned
+                    EmailContent = "<b>PO No: </b>" & .Rows(0)("fs_po").ToString & "<br />" _
+            & "<b>Date of Transaction: </b>" & .Rows(0)("payment_date").ToString & "<br />" _
+            & "<b>Payment Status: </b>" & .Rows(0)("payment_status").ToString & "<br />" _
+            & "<b>Entries paid for: </b>" & .Rows(0)("custom").ToString & "<br />" _
+            & "<b>First Name: </b>" & .Rows(0)("first_name").ToString & "<br />" _
+            & "<b>Last Name: </b>" & .Rows(0)("last_name").ToString & "<br />" _
+            & "<b>Address: </b>" & .Rows(0)("address_street").ToString & "<br />" _
+            & "<b>City: </b>" & .Rows(0)("address_city").ToString & "<br />" _
+            & "<b>State: </b>" & .Rows(0)("address_state").ToString & "<br />" _
+            & "<b>Zip: </b>" & .Rows(0)("address_zip").ToString & "<br />" _
+            & "<b>Country: </b>" & .Rows(0)("address_country").ToString & "<br />" _
+            & "<b>Email: </b>" & .Rows(0)("payer_email").ToString & "<br />" _
+            & "<b>Memo: </b>" & .Rows(0)("memo").ToString & "<br />" _
+            & "<b>Gross Amount: </b>" & Left(.Rows(0)("mc_gross").ToString, .Rows(0)("mc_gross").ToString.Length - 2) & "<br />" _
+            & "<b>Item Count: </b>" & .Rows(0)("item_count").ToString & "<br /><br />"
+                    If .Rows(0)("payment_status").ToString.Trim = "Completed" Then
+                        EmailContent = "REDACTED"
+                        Completed = True
+                    Else
+                        EmailContent = "REDACTED" & EmailContent
+                    End If
+                    Dim row As DataRow
+                    For Each row In .Rows
+                        If Not (IsDBNull(row("item_number"))) Then
+                            EmailContent = EmailContent _
+                            & "<b>Item" & .Rows.IndexOf(row) + 1 & ": </b>" & row("item_name").ToString & "<br />" _
+                            & "<b>Quantity: </b>" & row("quantity").ToString & "<br /><br />"
+                        End If
+                    Next row
+                    EmailContent = EmailContent _
+                    & "<p><img src="" REDACTED"" /></p>" _
+                    & "<p><a href="" REDACTED"" style="" font-size 9px;"">REDACTED</a></p>" _
+                    & "</div>
+</body>
+</html>"
+
+                End If
+
+            End With
+
+            MyCommand.Dispose()
+            sSqlConn.Close()
+
+            If Completed = True Then
+                SendEmail(EmailContent, "Completed ASA Transaction", SendEmailUse) ', )
+            Else
+                SendEmail(EmailContent, "ASA Payment needs followup: CHECK STATUS", SendEmailUse)
+            End If
+
+
+        Catch ex As Exception
+            ErrHandler.WriteError(ex.Message.ToString)
+        End Try
+
+
+
+    End Sub
+
+End Class
+
+
+
+</pre>
+</body>
+</html>
